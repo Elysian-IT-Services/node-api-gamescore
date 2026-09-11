@@ -64,9 +64,40 @@ async function fetchFixturesByCompetition(competitionId, page) {
 /**
  * 💾 Save fixtures
  */
+// For cs2, the live pipeline (live-data-updater.js -> insertUpdatesOnLiveFixturesScores.js)
+// is the authoritative, near-real-time source for these 4 fields while a match is in
+// progress. This batch job only runs every few hours, so if it keeps overwriting them it
+// can stomp fresher live data. lol/dota2 have no live pipeline at all, so this job stays
+// the sole owner of every field for those two sports — nothing changes for them.
+const LIVE_OWNED_FIELDS_BY_SPORT = {
+  cs2: new Set(['status', 'end_time', 'participants0_score', 'participants1_score']),
+};
+
 async function saveFixturesToDB(fixtures, sport) {
   const db = getDbBySport(sport);
   const processedIds = [];
+
+  const liveOwnedFields = LIVE_OWNED_FIELDS_BY_SPORT[sport] || new Set();
+  const updatableColumns = [
+    'competition_id',
+    'competition_name',
+    'end_time',
+    'scheduled_start_time',
+    'start_time',
+    'sport_alias',
+    'sport_name',
+    'status',
+    'tie',
+    'winner_id',
+    'participants0_id',
+    'participants0_name',
+    'participants0_score',
+    'participants1_id',
+    'participants1_name',
+    'participants1_score',
+    'hs_description',
+    'rr_description',
+  ].filter((column) => !liveOwnedFields.has(column));
 
   const query = `
     INSERT INTO fixtures (
@@ -92,24 +123,7 @@ async function saveFixturesToDB(fixtures, sport) {
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
-      competition_id = VALUES(competition_id),
-      competition_name = VALUES(competition_name),
-      end_time = VALUES(end_time),
-      scheduled_start_time = VALUES(scheduled_start_time),
-      start_time = VALUES(start_time),
-      sport_alias = VALUES(sport_alias),
-      sport_name = VALUES(sport_name),
-      status = VALUES(status),
-      tie = VALUES(tie),
-      winner_id = VALUES(winner_id),
-      participants0_id = VALUES(participants0_id),
-      participants0_name = VALUES(participants0_name),
-      participants0_score = VALUES(participants0_score),
-      participants1_id = VALUES(participants1_id),
-      participants1_name = VALUES(participants1_name),
-      participants1_score = VALUES(participants1_score),
-      hs_description = VALUES(hs_description),
-      rr_description = VALUES(rr_description)
+      ${updatableColumns.map((column) => `${column} = VALUES(${column})`).join(',\n      ')}
   `;
 
   for (const fixture of fixtures) {
