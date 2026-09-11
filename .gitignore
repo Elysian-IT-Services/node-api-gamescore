@@ -146,3 +146,12 @@ dist
 /brackets_hs-backup
 /fixture-shortcodes-manager
 ecosystem.config.cjs
+
+# local MySQL data volume created by docker-compose
+/dbdata
+
+# one-off tournament tree fetch script
+src/scripts/fetchTournamentTree.js
+
+# contains real secrets pasted in by accident; needs cleanup before it's safe to commit again
+.env.example

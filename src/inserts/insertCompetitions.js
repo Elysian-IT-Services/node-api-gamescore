@@ -127,25 +127,25 @@ async function saveCompetitionsToDB(competitions, sport) {
       region
     ) VALUES ?
     ON DUPLICATE KEY UPDATE
-      name = VALUES(name),
-      sport_alias = VALUES(sport_alias),
-      start_date = VALUES(start_date),
-      end_date = VALUES(end_date),
-      prize_pool_usd = VALUES(prize_pool_usd),
-      location = VALUES(location),
-      organizer = VALUES(organizer),
-      type = VALUES(type),
-      fixture_count = VALUES(fixture_count),
-      stage = VALUES(stage),
-      time_of_year = VALUES(time_of_year),
-      year = VALUES(year),
-      series = VALUES(series),
-      tier = VALUES(tier),
-      hs_description = VALUES(hs_description),
-      rr_description = VALUES(rr_description),
-      stage_type = VALUES(stage_type),
-      number = VALUES(number),
-      region = VALUES(region);
+      name = IF(manual_override = 0, VALUES(name), name),
+      sport_alias = IF(manual_override = 0, VALUES(sport_alias), sport_alias),
+      start_date = IF(manual_override = 0, VALUES(start_date), start_date),
+      end_date = IF(manual_override = 0, VALUES(end_date), end_date),
+      prize_pool_usd = IF(manual_override = 0, VALUES(prize_pool_usd), prize_pool_usd),
+      location = IF(manual_override = 0, VALUES(location), location),
+      organizer = IF(manual_override = 0, VALUES(organizer), organizer),
+      type = IF(manual_override = 0, VALUES(type), type),
+      fixture_count = IF(manual_override = 0, VALUES(fixture_count), fixture_count),
+      stage = IF(manual_override = 0, VALUES(stage), stage),
+      time_of_year = IF(manual_override = 0, VALUES(time_of_year), time_of_year),
+      year = IF(manual_override = 0, VALUES(year), year),
+      series = IF(manual_override = 0, VALUES(series), series),
+      tier = IF(manual_override = 0, VALUES(tier), tier),
+      hs_description = IF(manual_override = 0, VALUES(hs_description), hs_description),
+      rr_description = IF(manual_override = 0, VALUES(rr_description), rr_description),
+      stage_type = IF(manual_override = 0, VALUES(stage_type), stage_type),
+      number = IF(manual_override = 0, VALUES(number), number),
+      region = IF(manual_override = 0, VALUES(region), region);
   `;
 
   try {
