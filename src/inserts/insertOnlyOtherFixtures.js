@@ -73,6 +73,12 @@ const LIVE_OWNED_FIELDS_BY_SPORT = {
   cs2: new Set(['status', 'end_time', 'participants0_score', 'participants1_score']),
 };
 
+// Every column below (minus the live-owned ones for cs2) is also guarded by
+// manual_override: an editor's correction in the Admin Panel sets it, and a
+// separate scheduled job (releaseFixtureOverrides.js, in ssot-backend)
+// releases it after a time window — otherwise this batch job would silently
+// revert manual edits on its next run.
+
 async function saveFixturesToDB(fixtures, sport) {
   const db = getDbBySport(sport);
   const processedIds = [];
@@ -123,7 +129,9 @@ async function saveFixturesToDB(fixtures, sport) {
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
-      ${updatableColumns.map((column) => `${column} = VALUES(${column})`).join(',\n      ')}
+      ${updatableColumns
+        .map((column) => `${column} = IF(manual_override = 0, VALUES(${column}), ${column})`)
+        .join(',\n      ')}
   `;
 
   for (const fixture of fixtures) {
