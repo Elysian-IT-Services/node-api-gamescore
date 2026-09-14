@@ -1,5 +1,12 @@
 import { getDbBySport } from '../utils/dbUtils.js';
 
+// A missing/omitted score arrives as '', null, or undefined depending on the
+// caller; none of those should overwrite an already-stored valid score (0 is
+// a legitimate score and must not be treated as empty).
+export function isValidScore(value) {
+  return value !== '' && value !== null && value !== undefined;
+}
+
 export async function updateFixtureFields(game, requestBody) {
   const db = await getDbBySport(game);
 
@@ -47,15 +54,15 @@ export async function updateFixtureFields(game, requestBody) {
   
   // ✅ Actualizar scores según coincidencia de IDs
   if (participants0_id === current_p0_id) {
-    if (participants0_score !== '') updates.participants0_score = participants0_score;
+    if (isValidScore(participants0_score)) updates.participants0_score = participants0_score;
   } else if (participants0_id === current_p1_id) {
-    if (participants0_score !== '') updates.participants1_score = participants0_score;
+    if (isValidScore(participants0_score)) updates.participants1_score = participants0_score;
   }
 
   if (participants1_id === current_p0_id) {
-    if (participants1_score !== '') updates.participants0_score = participants1_score;
+    if (isValidScore(participants1_score)) updates.participants0_score = participants1_score;
   } else if (participants1_id === current_p1_id) {
-    if (participants1_score !== '') updates.participants1_score = participants1_score;
+    if (isValidScore(participants1_score)) updates.participants1_score = participants1_score;
   }
 
   // ✅ Actualizar status si está permitido

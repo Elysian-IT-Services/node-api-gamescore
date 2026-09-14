@@ -20,6 +20,18 @@ const RR_DEV_URL = process.env.RR_DEV_URL;
 const PICKEM_URL = process.env.PICKEM_URL;
 const PICKEM_STAGING_URL = process.env.PICKEM_STAGING_URL;
 
+// fixture_ended carries the feed's own close time in payload.timestamp
+// (confirmed epoch ms in a real capture). Falls back to Date.now() only if
+// the feed omits it, which hasn't been observed in practice.
+export function resolveFixtureEndTime(payload, onMissingTimestamp) {
+  const feedTimestamp = payload?.timestamp;
+  if (feedTimestamp === undefined || feedTimestamp === null) {
+    onMissingTimestamp?.();
+    return Date.now();
+  }
+  return feedTimestamp;
+}
+
 // GSK's WebSocket drops connections often (invalid close frames on their
 // end) and never replays missed events on reconnect. Reusing the same
 // context object across reconnects (instead of starting from a blank one)
@@ -199,7 +211,9 @@ export function connectWebSocket(fixture_id, existingContext = null) {
         const payload = {
           external_id: fixtureId,
           status: 'Ended',
-          end_time: Date.now()
+          end_time: resolveFixtureEndTime(message.payload, () =>
+            console.warn('[fixture_ended] payload.timestamp missing, falling back to Date.now()', { fixtureId })
+          )
         };
 
         console.log('[fixture_ended] Payload to send:', payload);

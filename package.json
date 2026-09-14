@@ -4,7 +4,7 @@
   "description": "bayes node api",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test src/inserts/insertUpdatesOnLiveFixturesScores.test.js src/live-data-updater.test.js",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "db:add-unique-pickban-dota2": "node add-unique-index-dota2-pickban.js"
