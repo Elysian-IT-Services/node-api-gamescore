@@ -4,6 +4,24 @@ This document provides a detailed explanation of each script located in the `src
 
 ---
 
+## `runLiveFixtureMonitors.js`
+
+### Purpose
+
+Discovers cs2 fixtures that just went live and hands each one off to a persistent per-fixture WebSocket listener, so live scores/status/end_time stay in sync in near-real-time. Unlike every other script in this document, this one is not a scheduled batch job — it's meant to run continuously as a single long-lived process (PM2 process `RUN-LIVE-FIXTURE-MONITORS`, `autorestart: true`, no `cron_restart`; see `documentation/pm2/pm2Commands.md`).
+
+### Detailed Workflow
+
+1.  **Poll for started fixtures**: Every 15 minutes (`setInterval`, not PM2 cron), calls `GET /fixtures?status=started&sport=cs2` against GameScorekeeper's REST API for the current day.
+2.  **Track fixtures already being monitored**: Keeps an in-memory `Set` of fixture IDs it has already opened a WebSocket for, so it doesn't reconnect to the same fixture on every poll.
+3.  **Open a WebSocket per new fixture**: For each newly detected fixture ID, calls `connectWebSocket(fixtureId)` from `../live-data-updater.js`, which holds the connection open and processes `fixture_started` / `score_changed` / `fixture_ended` events until the match ends.
+
+**Key Dependencies**: `axios`, `../live-data-updater.js`
+
+**Known limitations** (see `TECHNICAL_DISCOVERY.md` for the full audit): only monitors `sport=cs2` (`SPORTS_TO_MONITOR = ['cs2']`) even though the feed also serves lol/dota2; in-memory `trackedFixtures` set is lost on restart, so a restart mid-match relies on the next 15-minute poll picking the fixture back up.
+
+---
+
 ## `fetchCompetitionsDescriptions.js`
 
 ### Purpose

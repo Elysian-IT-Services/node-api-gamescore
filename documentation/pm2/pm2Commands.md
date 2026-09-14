@@ -192,6 +192,29 @@ pm2 start /mnt/data/home/master/new-node-api-gamescore/src/scripts/runAllCompeti
 
 ---
 
+## Command 9: Live Fixture Monitor (persistent WebSocket listener)
+## name: RUN-LIVE-FIXTURE-MONITORS
+
+```bash
+pm2 start /mnt/data/home/master/new-node-api-gamescore/src/scripts/runLiveFixtureMonitors.js \
+  --name "RUN-LIVE-FIXTURE-MONITORS" \
+  --cwd /mnt/data/home/master/new-node-api-gamescore
+```
+
+### Breakdown:
+- **`pm2 start`**: PM2 command to start a new process
+- **`/mnt/data/home/master/new-node-api-gamescore/src/scripts/runLiveFixtureMonitors.js`**: Polls GameScorekeeper's REST API every 15 minutes (`sport=cs2` only) for fixtures with `status=started`, then opens a persistent per-fixture WebSocket via `src/live-data-updater.js` for each newly detected fixture.
+- **`--name "RUN-LIVE-FIXTURE-MONITORS"`**: Process identifier.
+- **`--cwd /mnt/data/home/master/new-node-api-gamescore`**: Working directory specification.
+
+**Purpose**: Keeps live cs2 fixture scores/status/end_time in sync in near-real-time and forwards each update via HTTP POST to WP dev/staging/prod, RR dev, and Pickem prod/staging.
+
+**Unlike every other process in this document, this one does NOT use `--cron` / `--no-autorestart`.** It's a long-running listener, not a scheduled batch job — it has to stay up continuously to hold its WebSocket connections open, so it runs with the default `autorestart: true` and no cron schedule. If it crashes, PM2 restarts it immediately instead of waiting for the next cron tick.
+
+**Note**: this process must be restarted manually (`pm2 restart RUN-LIVE-FIXTURE-MONITORS`) whenever `src/live-data-updater.js` or any of its dependencies (`src/inserts/insertUpdatesOnLiveFixturesScores.js`, `src/inserts/live-data/*`) are deployed — PM2 does not reload it automatically on file change.
+
+---
+
 ## Common PM2 Options Explained
 
 ### `--cwd` (Current Working Directory)
@@ -226,6 +249,7 @@ Enables cron-based scheduling using standard cron syntax:
 | six-times-per-hour-match-events-update | 6 times per hour | Every hour at minutes 5, 15, 25, 35, 45, 55 |
 | new-create-competitions-twice-daily | Twice a day | 01:00, 13:00 |
 | new-all-competition-descriptions-ai | 3 times per hour | Every hour at minutes 0, 20, 40 |
+| RUN-LIVE-FIXTURE-MONITORS | Continuous (not cron-based) | Runs permanently; polls internally every 15 min |
 
 ## Useful PM2 Management Commands
 
