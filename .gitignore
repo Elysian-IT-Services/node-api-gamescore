@@ -147,6 +147,9 @@ dist
 /fixture-shortcodes-manager
 ecosystem.config.cjs
 
+# local operational docs, not shared via git
+documentation/
+
 # local MySQL data volume created by docker-compose
 /dbdata
 
