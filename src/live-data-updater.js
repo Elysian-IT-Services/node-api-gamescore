@@ -32,6 +32,482 @@ export function resolveFixtureEndTime(payload, onMissingTimestamp) {
   return feedTimestamp;
 }
 
+// Without a timeout a single hung destination (WP/HS/RR) stalls every later
+// request for the fixture, since they're awaited one after another.
+const http = axios.create({ timeout: 15000 });
+
+const FIXTURE_EVENT_TYPES = new Set(['fixture_started', 'fixture_ended', 'score_changed']);
+
+// ws doesn't await async 'message' listeners, so two events arriving a few ms
+// apart (score_changed, fixture_ended) were handled concurrently and could
+// reach Pick'ems in the wrong order — Pick'ems settles on "ended" using
+// whatever score it has at that moment. Chaining on the context (which
+// survives reconnects) keeps them in arrival order per fixture.
+export function enqueueForFixture(context, task) {
+  const run = (context.queue || Promise.resolve()).then(task);
+  context.queue = run.catch(() => {});
+  return run;
+}
+
+const toIntOrNull = (v) => {
+  if (v === undefined || v === null) return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+};
+
+// Takes score_changed.payload.scores or fixture_ended.payload.participants
+// (both [{ id, score }], ids as strings in real captures) and returns the
+// Pick'ems score fields, or null if either side is incomplete.
+export function buildPickemScores(participants) {
+  if (!Array.isArray(participants) || participants.length < 2) return null;
+  const [p0, p1] = participants;
+  const scores = {
+    participants0_id: toIntOrNull(p0?.id),
+    participants0_score: toIntOrNull(p0?.score),
+    participants1_id: toIntOrNull(p1?.id),
+    participants1_score: toIntOrNull(p1?.score)
+  };
+  return Object.values(scores).some((v) => v === null) ? null : scores;
+}
+
+export function sameScores(a, b) {
+  return a.participants0_id === b.participants0_id
+    && a.participants0_score === b.participants0_score
+    && a.participants1_id === b.participants1_id
+    && a.participants1_score === b.participants1_score;
+}
+
+// fixture_started / fixture_ended / score_changed handling. Runs through
+// enqueueForFixture so a fixture's outbound requests go out in the order
+// GSK sent them.
+async function handleFixtureEvent(message, context) {
+  // --- Detect start of the match ---
+  if (message.type === 'fixture_started') {
+    const fixtureId = message.payload.fixtureId;
+
+    console.log('[WebSocket] fixture_started event detected:', { fixtureId });
+
+    const payload = {
+      external_id: fixtureId,
+      status: 'Started'
+    };
+
+    console.log('[fixture_started] Payload to send:', payload);
+
+    // --- Send to DB ---
+
+    try {
+      const res = await updateFixtureFields( 'cs2' , payload)
+      console.log('[UPDATE ON DB] Response:', res);
+    } catch (err) {
+      console.error('[UPDATE ON DB] Error sending:', err.message);
+    }
+
+    // --- Send to WP DEV ---
+    try {
+      const res = await http.post(WP_DEV_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        }
+      });
+      console.log('[POST -> WP DEV] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> WP DEV] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to WP STAGING ---
+    try {
+      const res = await http.post(WP_STAGING_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        },
+        auth: {
+          username: 'fpmpuvheeq',
+          password: 'ENPK9JE57j'
+        }
+      });
+      console.log('[POST -> WP STAGING] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> WP STAGING] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to HS PROD ---
+    try {
+      console.log('[POST -> HS PROD] Payload:', payload);
+      const res = await http.post(WP_PROD_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        }
+      });
+      console.log('[POST -> HS PROD] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> HS PROD] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to RR DEV ---
+    try {
+      const res = await http.post(RR_DEV_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        }
+      });
+      console.log('[POST -> RR DEV] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> RR DEV] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to PICKEM---
+    try {
+      const pickemPayload = {
+        ...payload,
+        external_id: Number(payload.external_id),
+        status: typeof payload.status === 'string' ? payload.status.toLowerCase() : payload.status
+      };
+
+      const res = await http.post(PICKEM_URL, pickemPayload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': PICKEM_API_KEY
+        }
+      });
+
+      console.log('[POST -> PICKEM] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> PICKEM] Error sending:', err.message, {
+        status: err.response?.status,
+        data: err.response?.data
+      });
+    }
+
+    // --- Send to PICKEM STAGING ---
+    try {
+      const pickemPayload = {
+        ...payload,
+        external_id: Number(payload.external_id),
+        status: typeof payload.status === 'string' ? payload.status.toLowerCase() : payload.status
+      };
+
+      const res = await http.post(PICKEM_STAGING_URL, pickemPayload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': PICKEM_API_KEY
+        }
+      });
+
+      console.log('[POST -> PICKEM STAGING] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> PICKEM STAGING] Error sending:', err.message, {
+        status: err.response?.status,
+        data: err.response?.data
+      });
+    }
+  }
+
+  // --- Detect end of the match ---
+  if (message.type === 'fixture_ended') {
+    const fixtureId = message.payload.fixtureId;
+
+    console.log('[WebSocket] fixture_ended event detected:', { fixtureId });
+
+    const payload = {
+      external_id: fixtureId,
+      status: 'Ended',
+      end_time: resolveFixtureEndTime(message.payload, () =>
+        console.warn('[fixture_ended] payload.timestamp missing, falling back to Date.now()', { fixtureId })
+      )
+    };
+
+    console.log('[fixture_ended] Payload to send:', payload);
+
+    // fixture_ended already carries the final score (payload.participants).
+    // Sending it together with the status lets Pick'ems settle on the right
+    // score even if the last score_changed hasn't reached it yet. Falls back
+    // to the last score_changed seen for this fixture.
+    const finalPickemScores = buildPickemScores(message.payload.participants) ?? context.lastPickemScores ?? null;
+    if (!finalPickemScores) {
+      console.warn('[fixture_ended] No final score available for Pick\'ems, sending status only', { fixtureId });
+    }
+    context.finalPickemScores = finalPickemScores;
+    // Match is over: don't reconnect if the socket drops before GSK's own
+    // 'ended' system message arrives.
+    context.ended = true;
+
+    // --- Send to DB ---
+
+    try {
+      const res = await updateFixtureFields( 'cs2' , payload)
+      console.log('[UPDATE ON DB] Response:', res);
+    } catch (err) {
+      console.error('[UPDATE ON DB] Error sending:', err.message);
+    }
+
+    // --- Send to WP DEV ---
+    try {
+      const res = await http.post(WP_DEV_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        }
+      });
+      console.log('[POST -> WP DEV] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> WP DEV] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to WP STAGING ---
+    try {
+      const res = await http.post(WP_STAGING_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        },
+        auth: {
+          username: 'fpmpuvheeq',
+          password: 'ENPK9JE57j'
+        }
+      });
+      console.log('[POST -> WP STAGING] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> WP STAGING] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to HS PROD ---
+    try {
+      console.log('[POST -> HS PROD] Payload:', payload);
+      const res = await http.post(WP_PROD_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        }
+      });
+      console.log('[POST -> HS PROD] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> HS PROD] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to RR DEV ---
+    try {
+      const res = await http.post(RR_DEV_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        }
+      });
+      console.log('[POST -> RR DEV] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> RR DEV] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to PICKEM ---
+    try {
+      const pickemPayload = {
+        ...payload,
+        ...finalPickemScores,
+        external_id: Number(payload.external_id),
+        status: typeof payload.status === 'string' ? payload.status.toLowerCase() : payload.status
+      };
+      delete pickemPayload.end_time;
+
+      const res = await http.post(PICKEM_URL, pickemPayload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': PICKEM_API_KEY
+        }
+      });
+
+      console.log('[POST -> PICKEM] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> PICKEM] Error sending:', err.message, {
+        status: err.response?.status,
+        data: err.response?.data
+      });
+    }
+
+    // --- Send to PICKEM STAGING ---
+    try {
+      const pickemPayload = {
+        ...payload,
+        ...finalPickemScores,
+        external_id: Number(payload.external_id),
+        status: typeof payload.status === 'string' ? payload.status.toLowerCase() : payload.status
+      };
+      delete pickemPayload.end_time;
+
+      const res = await http.post(PICKEM_STAGING_URL, pickemPayload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': PICKEM_API_KEY
+        }
+      });
+
+      console.log('[POST -> PICKEM STAGING] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> PICKEM STAGING] Error sending:', err.message, {
+        status: err.response?.status,
+        data: err.response?.data
+      });
+    }
+  }
+
+
+
+  // --- Detect score_changed ---
+  if (message.type === 'score_changed') {
+    const fixtureId = message.payload.fixtureId;
+    const scores = message.payload.scores;
+
+    console.log('[WebSocket] score_changed event detected:', { fixtureId, scores });
+
+    const payload = {
+      external_id: fixtureId,
+      participants0_id: scores[0]?.id || null,
+      participants0_score: scores[0]?.score ?? null,
+      participants1_id: scores[1]?.id || null,
+      participants1_score: scores[1]?.score ?? null
+    };
+
+    console.log('[score_changed] Payload to send:', payload);
+
+    const pickemScores = buildPickemScores(scores);
+    if (pickemScores) context.lastPickemScores = pickemScores;
+
+    // --- Send to DB ---
+
+    try {
+      const res = await updateFixtureFields( 'cs2' , payload)
+      console.log('[UPDATE ON DB] Response:', res);
+    } catch (err) {
+      console.error('[UPDATE ON DB] Error sending:', err.message);
+    }
+
+    // --- Send to WP DEV ---
+    try {
+      const res = await http.post(WP_DEV_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        }
+      });
+
+      console.log('[POST -> WP DEV] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> WP DEV] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to WP STAGING ---
+    try {
+      const res = await http.post(WP_STAGING_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        },
+        auth: {
+          username: 'fpmpuvheeq',
+          password: 'ENPK9JE57j'
+        }
+      });
+
+      console.log('[POST -> WP STAGING] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> WP STAGING] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to HS PROD ---
+
+    try {
+      console.log('[POST -> HS PROD] Payload:', payload);
+      const res = await http.post(WP_PROD_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        }
+      });
+
+      console.log('[POST -> HS PROD] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> HS PROD] Error sending:', err.message, err.response?.data);
+    }
+
+    // --- Send to RR DEV ---
+    try {
+      const res = await http.post(RR_DEV_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': WP_API_KEY
+        }
+      });
+
+      console.log('[POST -> RR DEV] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> RR DEV] Error sending:', err.message, err.response?.data);
+    }
+
+    // After fixture_ended, a score that disagrees with the final one is stale
+    // (late or replayed event); forwarding it would make Pick'ems re-settle
+    // on the wrong score.
+    if (context.finalPickemScores && !(pickemScores && sameScores(pickemScores, context.finalPickemScores))) {
+      console.warn('[score_changed] Skipping Pick\'ems: fixture already ended with a different score', {
+        fixtureId, scores, final: context.finalPickemScores
+      });
+      return;
+    }
+
+    // --- Send to PICKEM ---
+    try {
+      const pickemPayload = {
+        external_id: Number(fixtureId),
+        participants0_id: toIntOrNull(scores[0]?.id),
+        participants0_score: scores[0]?.score ?? null,
+        participants1_id: toIntOrNull(scores[1]?.id),
+        participants1_score: scores[1]?.score ?? null
+      };
+
+      const res = await http.post(PICKEM_URL, pickemPayload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': PICKEM_API_KEY
+        }
+      });
+
+      console.log('[POST -> PICKEM] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> PICKEM] Error sending:', err.message, {
+        status: err.response?.status,
+        data: err.response?.data
+      });
+    }
+
+    // --- Send to PICKEM STAGING ---
+    try {
+      const pickemPayload = {
+        external_id: Number(fixtureId),
+        participants0_id: toIntOrNull(scores[0]?.id),
+        participants0_score: scores[0]?.score ?? null,
+        participants1_id: toIntOrNull(scores[1]?.id),
+        participants1_score: scores[1]?.score ?? null
+      };
+
+      const res = await http.post(PICKEM_STAGING_URL, pickemPayload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': PICKEM_API_KEY
+        }
+      });
+
+      console.log('[POST -> PICKEM STAGING] Response:', res.data);
+    } catch (err) {
+      console.error('[POST -> PICKEM STAGING] Error sending:', err.message, {
+        status: err.response?.status,
+        data: err.response?.data
+      });
+    }
+  }
+}
+
 // GSK's WebSocket drops connections often (invalid close frames on their
 // end) and never replays missed events on reconnect. Reusing the same
 // context object across reconnects (instead of starting from a blank one)
@@ -76,414 +552,8 @@ export function connectWebSocket(fixture_id, existingContext = null) {
     try {
       const message = JSON.parse(data);
 
-      // --- Detect start of the match ---
-      if (message.type === 'fixture_started') {
-        const fixtureId = message.payload.fixtureId;
-
-        console.log('[WebSocket] fixture_started event detected:', { fixtureId });
-
-        const payload = {
-          external_id: fixtureId,
-          status: 'Started'
-        };
-
-        console.log('[fixture_started] Payload to send:', payload);
-
-        // --- Send to DB ---
-
-        try {
-          const res = await updateFixtureFields( 'cs2' , payload)
-          console.log('[UPDATE ON DB] Response:', res);
-        } catch (err) {
-          console.error('[UPDATE ON DB] Error sending:', err.message);
-        }
-
-        // --- Send to WP DEV ---
-        try {
-          const res = await axios.post(WP_DEV_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            }
-          });
-          console.log('[POST -> WP DEV] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> WP DEV] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to WP STAGING ---
-        try {
-          const res = await axios.post(WP_STAGING_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            },
-            auth: {
-              username: 'fpmpuvheeq',
-              password: 'ENPK9JE57j'
-            }
-          });
-          console.log('[POST -> WP STAGING] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> WP STAGING] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to HS PROD ---
-        try {
-          console.log('[POST -> HS PROD] Payload:', payload);
-          const res = await axios.post(WP_PROD_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            }
-          });
-          console.log('[POST -> HS PROD] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> HS PROD] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to RR DEV ---
-        try {
-          const res = await axios.post(RR_DEV_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            }
-          });
-          console.log('[POST -> RR DEV] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> RR DEV] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to PICKEM---
-        try {
-          const pickemPayload = {
-            ...payload,
-            external_id: Number(payload.external_id),
-            status: typeof payload.status === 'string' ? payload.status.toLowerCase() : payload.status
-          };
-
-          const res = await axios.post(PICKEM_URL, pickemPayload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': PICKEM_API_KEY
-            }
-          });
-
-          console.log('[POST -> PICKEM] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> PICKEM] Error sending:', err.message, {
-            status: err.response?.status,
-            data: err.response?.data
-          });
-        }
-
-        // --- Send to PICKEM STAGING ---
-        try {
-          const pickemPayload = {
-            ...payload,
-            external_id: Number(payload.external_id),
-            status: typeof payload.status === 'string' ? payload.status.toLowerCase() : payload.status
-          };
-
-          const res = await axios.post(PICKEM_STAGING_URL, pickemPayload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': PICKEM_API_KEY
-            }
-          });
-
-          console.log('[POST -> PICKEM STAGING] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> PICKEM STAGING] Error sending:', err.message, {
-            status: err.response?.status,
-            data: err.response?.data
-          });
-        }
-      }
-
-      // --- Detect end of the match ---
-      if (message.type === 'fixture_ended') {
-        const fixtureId = message.payload.fixtureId;
-
-        console.log('[WebSocket] fixture_ended event detected:', { fixtureId });
-
-        const payload = {
-          external_id: fixtureId,
-          status: 'Ended',
-          end_time: resolveFixtureEndTime(message.payload, () =>
-            console.warn('[fixture_ended] payload.timestamp missing, falling back to Date.now()', { fixtureId })
-          )
-        };
-
-        console.log('[fixture_ended] Payload to send:', payload);
-
-        // --- Send to DB ---
-
-        try {
-          const res = await updateFixtureFields( 'cs2' , payload)
-          console.log('[UPDATE ON DB] Response:', res);
-        } catch (err) {
-          console.error('[UPDATE ON DB] Error sending:', err.message);
-        }
-
-        // --- Send to WP DEV ---
-        try {
-          const res = await axios.post(WP_DEV_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            }
-          });
-          console.log('[POST -> WP DEV] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> WP DEV] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to WP STAGING ---
-        try {
-          const res = await axios.post(WP_STAGING_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            },
-            auth: {
-              username: 'fpmpuvheeq',
-              password: 'ENPK9JE57j'
-            }
-          });
-          console.log('[POST -> WP STAGING] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> WP STAGING] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to HS PROD ---
-        try {
-          console.log('[POST -> HS PROD] Payload:', payload);
-          const res = await axios.post(WP_PROD_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            }
-          });
-          console.log('[POST -> HS PROD] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> HS PROD] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to RR DEV ---
-        try {
-          const res = await axios.post(RR_DEV_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            }
-          });
-          console.log('[POST -> RR DEV] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> RR DEV] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to PICKEM ---
-        try {
-          const pickemPayload = {
-            ...payload,
-            external_id: Number(payload.external_id),
-            status: typeof payload.status === 'string' ? payload.status.toLowerCase() : payload.status
-          };
-          delete pickemPayload.end_time;
-
-          const res = await axios.post(PICKEM_URL, pickemPayload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': PICKEM_API_KEY
-            }
-          });
-
-          console.log('[POST -> PICKEM] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> PICKEM] Error sending:', err.message, {
-            status: err.response?.status,
-            data: err.response?.data
-          });
-        }
-
-        // --- Send to PICKEM STAGING ---
-        try {
-          const pickemPayload = {
-            ...payload,
-            external_id: Number(payload.external_id),
-            status: typeof payload.status === 'string' ? payload.status.toLowerCase() : payload.status
-          };
-          delete pickemPayload.end_time;
-
-          const res = await axios.post(PICKEM_STAGING_URL, pickemPayload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': PICKEM_API_KEY
-            }
-          });
-
-          console.log('[POST -> PICKEM STAGING] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> PICKEM STAGING] Error sending:', err.message, {
-            status: err.response?.status,
-            data: err.response?.data
-          });
-        }
-      }
-
-
-
-      // --- Detect score_changed ---
-      if (message.type === 'score_changed') {
-        const fixtureId = message.payload.fixtureId;
-        const scores = message.payload.scores;
-
-        console.log('[WebSocket] score_changed event detected:', { fixtureId, scores });
-
-        const payload = {
-          external_id: fixtureId,
-          participants0_id: scores[0]?.id || null,
-          participants0_score: scores[0]?.score ?? null,
-          participants1_id: scores[1]?.id || null,
-          participants1_score: scores[1]?.score ?? null
-        };
-
-        console.log('[score_changed] Payload to send:', payload);
-
-        // --- Send to DB ---
-
-        try {
-          const res = await updateFixtureFields( 'cs2' , payload)
-          console.log('[UPDATE ON DB] Response:', res);
-        } catch (err) {
-          console.error('[UPDATE ON DB] Error sending:', err.message);
-        }
-
-        // --- Send to WP DEV ---
-        try {
-          const res = await axios.post(WP_DEV_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            }
-          });
-
-          console.log('[POST -> WP DEV] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> WP DEV] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to WP STAGING ---
-        try {
-          const res = await axios.post(WP_STAGING_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            },
-            auth: {
-              username: 'fpmpuvheeq',
-              password: 'ENPK9JE57j'
-            }
-          });
-
-          console.log('[POST -> WP STAGING] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> WP STAGING] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to HS PROD ---
-
-        try {
-          console.log('[POST -> HS PROD] Payload:', payload);
-          const res = await axios.post(WP_PROD_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            }
-          });
-
-          console.log('[POST -> HS PROD] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> HS PROD] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to RR DEV ---
-        try {
-          const res = await axios.post(RR_DEV_URL, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': WP_API_KEY
-            }
-          });
-
-          console.log('[POST -> RR DEV] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> RR DEV] Error sending:', err.message, err.response?.data);
-        }
-
-        // --- Send to PICKEM ---
-        try {
-          const toIntOrNull = (v) => {
-            if (v === undefined || v === null) return null;
-            const n = Number(v);
-            return Number.isNaN(n) ? null : n;
-          };
-
-          const pickemPayload = {
-            external_id: Number(fixtureId),
-            participants0_id: toIntOrNull(scores[0]?.id),
-            participants0_score: scores[0]?.score ?? null,
-            participants1_id: toIntOrNull(scores[1]?.id),
-            participants1_score: scores[1]?.score ?? null
-          };
-
-          const res = await axios.post(PICKEM_URL, pickemPayload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': PICKEM_API_KEY
-            }
-          });
-
-          console.log('[POST -> PICKEM] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> PICKEM] Error sending:', err.message, {
-            status: err.response?.status,
-            data: err.response?.data
-          });
-        }
-
-        // --- Send to PICKEM STAGING ---
-        try {
-          const toIntOrNull = (v) => {
-            if (v === undefined || v === null) return null;
-            const n = Number(v);
-            return Number.isNaN(n) ? null : n;
-          };
-
-          const pickemPayload = {
-            external_id: Number(fixtureId),
-            participants0_id: toIntOrNull(scores[0]?.id),
-            participants0_score: scores[0]?.score ?? null,
-            participants1_id: toIntOrNull(scores[1]?.id),
-            participants1_score: scores[1]?.score ?? null
-          };
-
-          const res = await axios.post(PICKEM_STAGING_URL, pickemPayload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': PICKEM_API_KEY
-            }
-          });
-
-          console.log('[POST -> PICKEM STAGING] Response:', res.data);
-        } catch (err) {
-          console.error('[POST -> PICKEM STAGING] Error sending:', err.message, {
-            status: err.response?.status,
-            data: err.response?.data
-          });
-        }
+      if (FIXTURE_EVENT_TYPES.has(message.type)) {
+        await enqueueForFixture(context, () => handleFixtureEvent(message, context));
       }
 
       // --- Dispatch to kills/assists/maps/rounds/equipment_state derivation ---
