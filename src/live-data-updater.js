@@ -43,9 +43,11 @@ const FIXTURE_EVENT_TYPES = new Set(['fixture_started', 'fixture_ended', 'score_
 // reach Pick'ems in the wrong order — Pick'ems settles on "ended" using
 // whatever score it has at that moment. Chaining on the context (which
 // survives reconnects) keeps them in arrival order per fixture.
-export function enqueueForFixture(context, task) {
-  const run = (context.queue || Promise.resolve()).then(task);
-  context.queue = run.catch(() => {});
+// queueKey lets independent streams (fixture events vs. live game events)
+// keep their own order without waiting on each other.
+export function enqueueForFixture(context, task, queueKey = 'queue') {
+  const run = (context[queueKey] || Promise.resolve()).then(task);
+  context[queueKey] = run.catch(() => {});
   return run;
 }
 
@@ -558,8 +560,12 @@ export function connectWebSocket(fixture_id, existingContext = null) {
 
       // --- Dispatch to kills/assists/maps/rounds/equipment_state derivation ---
       // handleLiveEvent also maintains context.mapNumber/mapId/roundNumber/roundId
-      // as map_started/round_started events come in.
-      await handleLiveEvent(message, context);
+      // as map_started/round_started events come in. Queued because on connect
+      // GSK replays the backlog in a burst: without it round 1 reached
+      // insertRound while map_started was still awaiting insertMap
+      // (context.mapId still null) and was dropped. Separate from the fixture
+      // queue so WP/Pick'ems HTTP calls don't hold up DB inserts.
+      await enqueueForFixture(context, () => handleLiveEvent(message, context), 'liveQueue');
 
       // --- System events ---
       if (message.type === 'auth') {

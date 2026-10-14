@@ -70,6 +70,20 @@ test('enqueueForFixture runs tasks in arrival order even when the first is slowe
   assert.deepEqual(order, ['score_changed', 'fixture_ended']);
 });
 
+test('enqueueForFixture keeps separate queues independent', async () => {
+  const context = {};
+  const order = [];
+  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // A slow fixture-event task must not hold up the live-event queue.
+  const slow = enqueueForFixture(context, async () => { await delay(30); order.push('fixture'); });
+  const mapStarted = enqueueForFixture(context, async () => { await delay(10); order.push('map_started'); }, 'liveQueue');
+  const roundStarted = enqueueForFixture(context, async () => { order.push('round_started'); }, 'liveQueue');
+  await Promise.all([slow, mapStarted, roundStarted]);
+
+  assert.deepEqual(order, ['map_started', 'round_started', 'fixture']);
+});
+
 test('enqueueForFixture keeps the queue going after a task fails', async () => {
   const context = {};
   const failed = enqueueForFixture(context, async () => { throw new Error('boom'); });
