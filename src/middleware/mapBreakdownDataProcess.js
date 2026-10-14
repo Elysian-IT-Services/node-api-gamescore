@@ -18,11 +18,12 @@ export async function getMapBreakdownByTeam(
   const safeBatchSize = !isNaN(batch) && batch > 0 ? batch : 100;
   if (isNaN(safeBatchSize)) throw new Error("Invalid batch size");
 
-  // ✅ Get total fixtures of the team in the specific competition
+  // ✅ Get total ended fixtures of the team in the specific competition
   const [[{ total }]] = await db.execute(
     `SELECT COUNT(*) AS total
      FROM fixtures
      WHERE competition_id = ?
+       AND status = 'ended'
        AND (participants0_id = ? OR participants1_id = ?)`,
     [competitionIdNum, teamIdNum, teamIdNum]
   );
@@ -32,9 +33,10 @@ export async function getMapBreakdownByTeam(
   // ✅ Loop in batches also filtering by competition_id
   for (let offset = 0; offset < total; offset += safeBatchSize) {
     const [fixtures] = await db.execute(
-      `SELECT id, winner_id
+      `SELECT id
        FROM fixtures
        WHERE competition_id = ?
+         AND status = 'ended'
          AND (participants0_id = ? OR participants1_id = ?)
        ORDER BY start_time DESC
        LIMIT ${safeBatchSize} OFFSET ${offset}`,
@@ -43,7 +45,24 @@ export async function getMapBreakdownByTeam(
 
     for (const fixture of fixtures) {
       const fixtureId = fixture.id;
-      const winnerId = fixture.winner_id;
+
+      // 👇 Rounds won per map and team, to know who won each map (the fixture
+      // winner_id is the series winner, not the map winner)
+      const [roundRows] = await db.execute(
+        `SELECT map_number, winner_team_id, COUNT(*) AS rounds_won
+         FROM cs_match_events
+         WHERE fixture_id = ?
+           AND name = 'round_ended'
+           AND winner_team_id IS NOT NULL
+         GROUP BY map_number, winner_team_id`,
+        [fixtureId]
+      );
+
+      const roundsByMap = {};
+      for (const row of roundRows) {
+        if (!roundsByMap[row.map_number]) roundsByMap[row.map_number] = {};
+        roundsByMap[row.map_number][String(row.winner_team_id)] = Number(row.rounds_won);
+      }
 
       // 👇 Get maps that were played in the fixture
       const [maps] = await db.execute(
@@ -77,9 +96,15 @@ export async function getMapBreakdownByTeam(
 
         mapStats[map_name].played += 1;
 
-        if (String(winnerId) === String(teamIdNum)) {
+        const mapRounds = roundsByMap[map_number] || {};
+        const teamRounds = mapRounds[String(teamIdNum)] || 0;
+        const opponentRounds = Object.entries(mapRounds)
+          .filter(([id]) => id !== String(teamIdNum))
+          .reduce((sum, [, rounds]) => sum + rounds, 0);
+
+        if (teamRounds > opponentRounds) {
           mapStats[map_name].wins += 1;
-        } else if (winnerId !== null) {
+        } else if (opponentRounds > teamRounds) {
           mapStats[map_name].losses += 1;
         }
       }

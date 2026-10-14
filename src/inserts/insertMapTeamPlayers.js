@@ -16,6 +16,25 @@ export async function getFixtureIds(
   toDate = null
 ) {
 
+  // Without an explicit range: ended fixtures from the last 48h that still have
+  // no rows. GSK only publishes post-match maps once the fixture has ended, so a
+  // forward-looking date window misses anything ending after the run.
+  if (!fromDate || !toDate) {
+    const since = Date.now() - 48 * 60 * 60 * 1000;
+    const [rows] = await db.query(
+      `SELECT id
+       FROM fixtures
+       WHERE status = 'ended'
+         AND end_time >= ?
+         AND NOT EXISTS (
+           SELECT 1 FROM map_team_round_scores
+           WHERE map_team_round_scores.fixture_id = fixtures.id
+         )`,
+      [since]
+    );
+    return rows.map(r => r.id);
+  }
+
   const { from, to } = resolveDateRangeToUnix(fromDate, toDate);
 
   const query = `
@@ -53,6 +72,7 @@ async function fetchMapTeamPlayers(fixtureId) {
     }
 
     if (!fixtureData?.maps || !Array.isArray(fixtureData.maps)) {
+      console.warn(`[WARN] GSK returned no maps for fixture ${fixtureId} (status: ${fixtureData?.status ?? 'unknown'})`);
       return { teamStatsResult: [], teamRoundScores: [] };
     }
 

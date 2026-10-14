@@ -15,12 +15,20 @@ function getDbBySport(sport = 'cs2') {
 export async function getMatchMapResults(fixtureId, sport = 'cs2') {
   const db = getDbBySport(sport);
 
-  // 1. Obtener pick/ban de API
-  const pickRes = await axios.get(`${API_BASE_URL}pickban/${fixtureId}/maps`, {
-    headers: { Authorization: AUTH_TOKEN }
-  });
-
-  const pickBanList = pickRes.data?.pickBan || [];
+  // 1. Obtener pick/ban de API (opcional: sin pick/ban, pick_team_id queda null)
+  // Timeout corto: WordPress corta esta llamada a los 3s.
+  let pickBanList = [];
+  try {
+    const pickRes = await axios.get(`${API_BASE_URL}pickban/${fixtureId}/maps`, {
+      headers: { Authorization: AUTH_TOKEN },
+      timeout: 2000
+    });
+    pickBanList = pickRes.data?.pickBan || [];
+  } catch (err) {
+    if (err.response?.status !== 404) {
+      console.error(`[ERROR] Pick/Ban for fixture ${fixtureId}:`, err.message);
+    }
+  }
 
   // Diccionario de picks por map_name (formato de_*)
   const pickMap = {};
