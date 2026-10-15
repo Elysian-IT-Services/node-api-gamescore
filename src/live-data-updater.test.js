@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveFixtureEndTime, buildPickemScores, sameScores, enqueueForFixture } from './live-data-updater.js';
+import { resolveFixtureEndTime, buildPickemScores, sameScores, enqueueForFixture, orderByFixture } from './live-data-updater.js';
 
 // Ticket 869f1cmaf: fixture_ended must persist the feed's own payload.timestamp
 // (confirmed epoch ms in a real capture) instead of the server's Date.now().
@@ -89,4 +89,21 @@ test('enqueueForFixture keeps the queue going after a task fails', async () => {
   const failed = enqueueForFixture(context, async () => { throw new Error('boom'); });
   await assert.rejects(failed, /boom/);
   assert.equal(await enqueueForFixture(context, async () => 'ok'), 'ok');
+});
+
+test('orderByFixture puts GSK scores in the fixture participants order', () => {
+  // 1080202: fixture is 9z (11496) vs Falcons (12257), GSK sent Falcons first.
+  const scores = [{ id: '12257', score: 2 }, { id: '11496', score: 1 }];
+  assert.deepEqual(orderByFixture(scores, ['11496', '12257']), [
+    { id: '11496', score: 1 },
+    { id: '12257', score: 2 }
+  ]);
+  assert.deepEqual(orderByFixture(scores, [12257, 11496]), scores);
+});
+
+test('orderByFixture leaves the array untouched when ids or order are unknown', () => {
+  const scores = [{ id: '1', score: 0 }, { id: '2', score: 1 }];
+  assert.equal(orderByFixture(scores, null), scores);
+  assert.equal(orderByFixture(scores, ['1', '99']), scores);
+  assert.equal(orderByFixture(undefined, ['1', '2']), undefined);
 });

@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import axios from 'axios';
 import {updateFixtureFields} from './inserts/insertUpdatesOnLiveFixturesScores.js';
 import { handleLiveEvent } from './inserts/live-data/index.js';
+import { getDbBySport } from './utils/dbUtils.js';
 
 dotenv.config();
 
@@ -70,6 +71,37 @@ export function buildPickemScores(participants) {
     participants1_score: toIntOrNull(p1?.score)
   };
   return Object.values(scores).some((v) => v === null) ? null : scores;
+}
+
+// GSK's score_changed.scores / fixture_ended.participants don't always come
+// in the fixture's participants0/participants1 order, and WP's
+// /fixtures/v1/update stores the ids in payload order (leaving names and
+// logos where they were), which swapped teams on the site. Reorder by the
+// fixture's own order; leave the array as-is if the ids don't match.
+export function orderByFixture(entries, fixtureOrder) {
+  if (!Array.isArray(entries) || entries.length < 2 || !fixtureOrder) return entries;
+  const [p0, p1] = fixtureOrder.map(String);
+  const e0 = entries.find((e) => String(e?.id) === p0);
+  const e1 = entries.find((e) => String(e?.id) === p1);
+  return e0 && e1 ? [e0, e1] : entries;
+}
+
+// Fixture's participant order from our DB, cached on the context.
+async function getFixtureOrder(context) {
+  if (context.participantOrder) return context.participantOrder;
+  try {
+    const [rows] = await getDbBySport('cs2').query(
+      'SELECT participants0_id, participants1_id FROM fixtures WHERE id = ? LIMIT 1',
+      [context.fixtureId]
+    );
+    const row = rows[0];
+    if (row?.participants0_id && row?.participants1_id) {
+      context.participantOrder = [row.participants0_id, row.participants1_id];
+    }
+  } catch (err) {
+    console.error('[getFixtureOrder] Error reading fixture order:', err.message);
+  }
+  return context.participantOrder ?? null;
 }
 
 export function sameScores(a, b) {
@@ -235,7 +267,8 @@ async function handleFixtureEvent(message, context) {
     // Sending it together with the status lets Pick'ems settle on the right
     // score even if the last score_changed hasn't reached it yet. Falls back
     // to the last score_changed seen for this fixture.
-    const finalPickemScores = buildPickemScores(message.payload.participants) ?? context.lastPickemScores ?? null;
+    const finalParticipants = orderByFixture(message.payload.participants, await getFixtureOrder(context));
+    const finalPickemScores = buildPickemScores(finalParticipants) ?? context.lastPickemScores ?? null;
     if (!finalPickemScores) {
       console.warn('[fixture_ended] No final score available for Pick\'ems, sending status only', { fixtureId });
     }
@@ -366,7 +399,7 @@ async function handleFixtureEvent(message, context) {
   // --- Detect score_changed ---
   if (message.type === 'score_changed') {
     const fixtureId = message.payload.fixtureId;
-    const scores = message.payload.scores;
+    const scores = orderByFixture(message.payload.scores, await getFixtureOrder(context));
 
     console.log('[WebSocket] score_changed event detected:', { fixtureId, scores });
 
