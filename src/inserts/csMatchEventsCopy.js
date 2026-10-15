@@ -4,6 +4,7 @@ import mysql from 'mysql2/promise';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import { dbCS2, dbLOL } from '../db.js'; // Import all DB connections
+import { saveOrUpdateMapBreakdown } from '../middleware/saveOrUpdateMapBreakdown.js';
 
 dotenv.config();
 
@@ -76,7 +77,7 @@ export async function processCsMatchEvents(sport = 'cs2') {
     console.log(`🕒 Searching for ended fixtures since ${since}...`);
 
     const [fixtures] = await db.query(
-      `SELECT id FROM fixtures
+      `SELECT id, competition_id, participants0_id, participants1_id FROM fixtures
        WHERE status = 'ended'
        AND (end_time >= ? OR start_time >= ?)
        AND NOT EXISTS (
@@ -148,6 +149,14 @@ export async function processCsMatchEvents(sport = 'cs2') {
 
         console.log(`✅ Fixture ${fixtureId} inserted with ${inserted} events.`);
         processedFixtures++;
+
+        // Refresh both teams' map breakdown now instead of waiting for the
+        // nightly RUN-ALL-ACTIVE-UPDATES, so it includes this fixture right away.
+        if (inserted > 0 && fixture.competition_id) {
+          for (const teamId of [fixture.participants0_id, fixture.participants1_id]) {
+            if (teamId) await saveOrUpdateMapBreakdown(teamId, fixture.competition_id, sport);
+          }
+        }
       } catch (apiErr) {
         console.error(`❌ Error getting events for fixture ${fixtureId}:`, apiErr.response?.data || apiErr.message);
       }
