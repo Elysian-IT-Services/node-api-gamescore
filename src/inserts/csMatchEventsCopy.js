@@ -65,34 +65,28 @@ function extractEventData(payload, fixtureId, event) {
 export async function processCsMatchEvents(sport = 'cs2') {
   const db = getDbBySport(sport); // <-- Use the correct DB connection
 
-  const now = new Date();
-
-  //🟡 Yesterday 00:00:00
-  const startOfYesterday = new Date(now);
-  startOfYesterday.setDate(now.getDate() - 1);
-  startOfYesterday.setHours(0, 0, 0, 0);
-  const startOfYesterdayUnix = startOfYesterday.getTime();
-
-  // 🟢 Today 23:59:59
-  const hoy = new Date();
-  const endOfToday = new Date(hoy);
-  endOfToday.setHours(23, 59, 59, 999);
-  const endOfTodayUnix = endOfToday.getTime();
+  // Ended fixtures from the last 7 days with no events yet. Selecting by
+  // start_time alone missed every fixture whose start_time was never set
+  // (the live feed only stored status/end_time), so they were never copied.
+  // Only ended ones: a copy taken mid-match would stay partial forever,
+  // since fixtures with any events are skipped below.
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
 
   try {
-    console.log(`🕒 Searching for fixtures between ${startOfYesterdayUnix} and ${endOfTodayUnix}...`);
+    console.log(`🕒 Searching for ended fixtures since ${since}...`);
 
     const [fixtures] = await db.query(
-      `SELECT id FROM fixtures 
-       WHERE start_time BETWEEN ? AND ? 
+      `SELECT id FROM fixtures
+       WHERE status = 'ended'
+       AND (end_time >= ? OR start_time >= ?)
        AND NOT EXISTS (
-        SELECT 
-        1 
-        FROM cs_match_events 
-        WHERE 
+        SELECT
+        1
+        FROM cs_match_events
+        WHERE
         cs_match_events.fixture_id = fixtures.id
        )`,
-      [startOfYesterdayUnix, endOfTodayUnix]
+      [since, since]
     );
 
     console.log(`🔍 Found ${fixtures.length} fixtures for ${sport}.`);

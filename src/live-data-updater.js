@@ -97,9 +97,15 @@ async function handleFixtureEvent(message, context) {
     console.log('[fixture_started] Payload to send:', payload);
 
     // --- Send to DB ---
+    // start_time only goes to our DB (kept only if the fixture has none yet):
+    // the event-copy job and other selections rely on it. WP/Pick'ems keep
+    // receiving the same payload as before.
 
     try {
-      const res = await updateFixtureFields( 'cs2' , payload)
+      const res = await updateFixtureFields('cs2', {
+        ...payload,
+        start_time: message.payload?.timestamp ?? Date.now()
+      });
       console.log('[UPDATE ON DB] Response:', res);
     } catch (err) {
       console.error('[UPDATE ON DB] Error sending:', err.message);

@@ -17,6 +17,7 @@ export async function updateFixtureFields(game, requestBody) {
     participants1_id,
     participants1_score,
     status,
+    start_time,
     end_time,
   } = requestBody;
 
@@ -31,8 +32,9 @@ export async function updateFixtureFields(game, requestBody) {
         id,
         participants0_id,
         participants1_id,
-        sport_alias
-      FROM fixtures 
+        sport_alias,
+        start_time
+      FROM fixtures
       WHERE id = ? 
       LIMIT 1
     `,
@@ -69,6 +71,11 @@ export async function updateFixtureFields(game, requestBody) {
   const allowed_status = ['Started', 'Ended'];
   if (status && allowed_status.includes(status)) {
     updates.status = status;
+  }
+
+  // ✅ Guardar start_time (fixture_started) solo si todavía no tiene uno
+  if (start_time !== undefined && start_time !== null && fixture.start_time == null) {
+    updates.start_time = start_time;
   }
 
   // ✅ Actualizar end_time si viene en el payload
