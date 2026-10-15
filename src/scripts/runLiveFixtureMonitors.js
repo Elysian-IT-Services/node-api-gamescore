@@ -12,8 +12,9 @@ const API_URL = process.env.GAME_SCORE_API;
 const trackedFixtures = new Set(); // Fixture IDs for which WebSocket has already been opened
 const SPORTS_TO_MONITOR = ['cs2']; // Sports to monitor
 
-// 🔄 Changed to 15 minutes
-const POLL_INTERVAL = 15 * 60 * 1000; // 15 minutes in milliseconds
+// Was 15 minutes, which connected the WebSocket up to 15 min after a match
+// started (live score lagging that long). One GSK request per poll.
+const POLL_INTERVAL = 2 * 60 * 1000; // 2 minutes in milliseconds
 
 async function fetchStartedFixturesForSport(sport) {
   // 👉 Recalculate date and URL in each execution
@@ -59,7 +60,7 @@ function pollAllSports() {
 // 🚀 First immediate execution
 pollAllSports();
 
-// ⏱️ Then every 15 minutes
+// ⏱️ Then every POLL_INTERVAL
 setInterval(pollAllSports, POLL_INTERVAL);
 
 console.log(`[MONITOR] Fixture monitoring started for: ${SPORTS_TO_MONITOR.join(', ')}...`);
