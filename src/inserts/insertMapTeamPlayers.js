@@ -16,11 +16,12 @@ export async function getFixtureIds(
   toDate = null
 ) {
 
-  // Without an explicit range: ended fixtures from the last 48h that still have
-  // no rows. GSK only publishes post-match maps once the fixture has ended, so a
-  // forward-looking date window misses anything ending after the run.
+  // Without an explicit range: ended fixtures from the last 7 days that still
+  // have no rows. GSK only publishes post-match maps once the fixture has ended,
+  // and sometimes days late (its Oct 2026 backlog came back ~48h+ after the
+  // matches), so the window has to outlast those delays.
   if (!fromDate || !toDate) {
-    const since = Date.now() - 48 * 60 * 60 * 1000;
+    const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const [rows] = await db.query(
       `SELECT id
        FROM fixtures
