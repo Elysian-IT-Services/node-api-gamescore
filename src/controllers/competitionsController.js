@@ -1,6 +1,7 @@
 //src/controllers/competitionsController.js
 
 import * as competitionService from '../services/competition/competitionService.js';
+import * as oracleEnrichmentService from '../services/oracle/oracleEnrichmentService.js';
 
 // Generic controller factory to create sport-specific handlers
 const createGetCompetitions = (sport) => async (req, res) => {
@@ -23,7 +24,20 @@ const createGetCompetitions = (sport) => async (req, res) => {
       filters,
       sport
     });
-    res.json(result);
+
+    // Oracle enrichment (ticket 869fa9urd) is merged in here, at the API
+    // layer, on top of the existing GSK-backed query above — it never
+    // touches the `competitions` table itself. Fails open: if Oracle's
+    // Supabase is unreachable, `enrichment` comes back {} and every row
+    // just gets oracle_enrichment: null, same as a competition Oracle has
+    // no data for at all.
+    const enrichment = await oracleEnrichmentService.getEnrichmentForCompetitions(result.data);
+    const data = result.data.map((row) => ({
+      ...row,
+      oracle_enrichment: enrichment[row.id] || null,
+    }));
+
+    res.json({ ...result, data });
   } catch (err) {
     console.error(`Error in getCompetitions (${sport}) controller:`, err);
     res.status(500).json({ error: 'Internal server error' });
@@ -35,7 +49,9 @@ const createGetCompetitionById = (sport) => async (req, res) => {
     const { id } = req.params;
     const row = await competitionService.findById(id, sport);
     if (!row) return res.status(404).json({ error: 'Competition not found' });
-    res.json(row);
+
+    const enrichment = await oracleEnrichmentService.getEnrichmentForCompetitions([row]);
+    res.json({ ...row, oracle_enrichment: enrichment[row.id] || null });
   } catch (err) {
     console.error(`Error in getCompetitionById (${sport}) controller:`, err);
     res.status(500).json({ error: 'Internal server error' });
