@@ -47,6 +47,10 @@ const ENRICHMENT_FIELDS = [
 // the two don't read as a disagreement once merged. See ticket 869fa9vhm.
 function normalizeTier(rawTier) {
   if (!rawTier) return null;
+  // The competitions table defaults this (and several other GSK-sourced
+  // columns) to this literal placeholder before GSK has actually supplied a
+  // value — treat it as "no tier yet", not as a real tier string.
+  if (String(rawTier).trim().toLowerCase() === "waiting for information") return null;
   const match = String(rawTier).trim().match(/^([A-Za-z+]+)[\s-]*Tier$/i);
   if (match) return match[1].toUpperCase();
   return String(rawTier).trim().toUpperCase();
@@ -56,6 +60,21 @@ function parseMoneyLike(value) {
   if (value == null) return null;
   const n = Number(String(value).replace(/[^0-9.-]/g, ""));
   return Number.isFinite(n) ? n : null;
+}
+
+// How far apart numeric candidates have to be before it's a genuine
+// disagreement worth flagging, not just rounding — ticket 869fa9vhm.
+// 1% catches the real case the Oracle 9 report found (HLTV $2,000,000 vs
+// Liquipedia $2,025,000, 1.25% apart) without false-positiving on cents.
+const CONFLICT_RELATIVE_THRESHOLD = 0.01;
+
+function hasGenuineConflict(values) {
+  const nums = values.filter((v) => typeof v === "number" && Number.isFinite(v));
+  if (nums.length < 2) return false;
+  const max = Math.max(...nums);
+  const min = Math.min(...nums);
+  if (min === 0) return max !== 0;
+  return (max - min) / min > CONFLICT_RELATIVE_THRESHOLD;
 }
 
 // Source-priority rule for prize pool, per the Oracle 9 report's findings:
@@ -150,19 +169,37 @@ export async function getEnrichmentForCompetitions(competitions) {
     if (!bucket) continue;
     const { fields, latestFetchedAt } = bucket;
 
+    const liquipediaTableTotal = parseMoneyLike(fields.prize_table_total_usd);
+    const liquipediaStated = parseMoneyLike(fields.prize_pool_stated);
+    const hltvValue = parseMoneyLike(fields.prize_pool_usd);
+    const gskPrizePool = comp.prize_pool_usd ?? null;
+
     const prizePool = resolvePrizePool({
-      gskValue: comp.prize_pool_usd ?? null,
-      liquipediaTableTotal: parseMoneyLike(fields.prize_table_total_usd),
-      liquipediaStated: parseMoneyLike(fields.prize_pool_stated),
-      hltvValue: parseMoneyLike(fields.prize_pool_usd),
+      gskValue: gskPrizePool,
+      liquipediaTableTotal,
+      liquipediaStated,
+      hltvValue,
     });
 
+    // Tier precedence (ticket 869fa9vhm): Oracle/Liquipedia wins when it has
+    // a value for this competition — it's the source that specializes in
+    // tier classification — GSK's own tier is the fallback when Oracle has
+    // nothing. Neither ever overwrites the other in the DB; this is computed
+    // fresh on each response.
+    const tierOracle = normalizeTier(fields.tier || fields.publisher_tier);
+    const tierGsk = normalizeTier(comp.tier);
+    const tierResolved = tierOracle || tierGsk || null;
+    const tierConflict = !!(tierOracle && tierGsk && tierOracle !== tierGsk);
+
     result[comp.id] = {
-      tier_oracle: normalizeTier(fields.tier || fields.publisher_tier),
+      tier_oracle: tierOracle,
+      tier_resolved: tierResolved,
+      tier_conflict: tierConflict,
       format: buildFormatText(fields),
       placements: buildPlacements(fields),
       prize_pool: prizePool.value,
       prize_pool_source: prizePool.source,
+      prize_pool_conflict: hasGenuineConflict([gskPrizePool, liquipediaTableTotal, liquipediaStated, hltvValue]),
       links: {
         liquipedia: fields.page_url || null,
         official: fields.official_website || null,
