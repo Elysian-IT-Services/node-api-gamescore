@@ -189,11 +189,13 @@ export async function getEnrichmentForCompetitions(competitions) {
     const tierOracle = normalizeTier(fields.tier || fields.publisher_tier);
     const tierGsk = normalizeTier(comp.tier);
     const tierResolved = tierOracle || tierGsk || null;
+    const tierResolvedSource = tierOracle ? "oracle" : tierGsk ? "gsk" : null;
     const tierConflict = !!(tierOracle && tierGsk && tierOracle !== tierGsk);
 
     result[comp.id] = {
       tier_oracle: tierOracle,
       tier_resolved: tierResolved,
+      tier_resolved_source: tierResolvedSource,
       tier_conflict: tierConflict,
       format: buildFormatText(fields),
       placements: buildPlacements(fields),
