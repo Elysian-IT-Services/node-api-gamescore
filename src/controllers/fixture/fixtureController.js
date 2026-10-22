@@ -1,6 +1,7 @@
 // src/controllers/fixture/fixtureController.js
 
 import { getFixtures, getFixtureById } from '../../services/fixture/fixtureServices.js';
+import { getPredictionsForFixtures } from '../../services/oracle/oraclePredictionService.js';
 
 export const listFixtures = async (req, res) => {
     try {
@@ -23,7 +24,17 @@ export const listFixtures = async (req, res) => {
         const parsedPage = Number.isFinite(Number(page)) ? parseInt(page, 10) : 1;
 
         const result = await getFixtures({ page: parsedPage, filters, sport });
-        res.json(result);
+
+        // Oracle predictions (ticket 869fa9vzu) merged in here, same
+        // additive, fail-open pattern as oracle_enrichment on competitions —
+        // never touches the fixtures table itself.
+        const predictions = await getPredictionsForFixtures(result.data);
+        const data = result.data.map((row) => ({
+            ...row,
+            oracle_prediction: predictions[row.id] || null,
+        }));
+
+        res.json({ ...result, data });
     } catch (err) {
         console.error('Error en listFixtures:', err);
         res.status(500).json({ error: 'Internal server error' });
@@ -36,7 +47,9 @@ export const getFixture = async (req, res) => {
         const sport = req.params && req.params.sport ? req.params.sport : req.query.sport;
         const row = await getFixtureById(id, sport);
         if (!row) return res.status(404).json({ error: 'Fixture not found' });
-        res.json(row);
+
+        const predictions = await getPredictionsForFixtures([row]);
+        res.json({ ...row, oracle_prediction: predictions[row.id] || null });
     } catch (err) {
         console.error('Error en getFixture:', err);
         res.status(500).json({ error: 'Internal server error' });
