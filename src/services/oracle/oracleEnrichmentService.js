@@ -56,8 +56,18 @@ function normalizeTier(rawTier) {
   return String(rawTier).trim().toUpperCase();
 }
 
+// GSK's and HLTV's own prize-pool fields are suffixed `_usd` in Oracle's own
+// schema — a guarantee Oracle itself makes. Liquipedia's `prize_pool_stated`
+// has no such suffix, so Oracle doesn't actually promise it's USD; in every
+// record checked so far it has been (no currency symbol/code ever seen),
+// but that's convention, not a guarantee. If one ever does carry a non-USD
+// symbol/code, treat it as unusable rather than silently parsing the number
+// as if it were dollars (869fa9vhm).
+const NON_USD_CURRENCY_PATTERN = /[€£¥₽]|EUR|GBP|JPY|RUB/i;
+
 function parseMoneyLike(value) {
   if (value == null) return null;
+  if (NON_USD_CURRENCY_PATTERN.test(String(value))) return null;
   const n = Number(String(value).replace(/[^0-9.-]/g, ""));
   return Number.isFinite(n) ? n : null;
 }
