@@ -44,13 +44,20 @@ const createGetCompetitions = (sport) => async (req, res) => {
   }
 };
 
+const CONFLICTS_DEFAULT_WINDOW_DAYS_BEFORE = 30;
+const CONFLICTS_DEFAULT_WINDOW_DAYS_AFTER = 60;
+
 // Minimal conflict surfacing (ticket 869fa9vhm, until the Programmatic
-// Reconciler exists): lists competitions on this page whose Oracle
-// enrichment disagrees with GSK on tier or prize pool, so someone can check
-// this periodically instead of the flags sitting unseen inside individual
-// competition responses. Same pagination as the regular list endpoint —
-// pass ?page= to see further pages; nothing is new here query-wise, it's
-// still the GSK-backed query plus the same enrichment merge, just filtered.
+// Reconciler exists): lists competitions whose Oracle enrichment disagrees
+// with GSK on tier or prize pool, so someone can check this periodically
+// instead of the flags sitting unseen inside individual competition
+// responses.
+//
+// Defaults to a start_date window of -30/+60 days from today when the
+// caller doesn't pass their own date filters — without this, "check for
+// conflicts" would mean paging through every competition ever recorded
+// (confirmed live: 98 pages for cs2 alone) to find the handful that are
+// actually still relevant. Pass ?start_date=&end_date= to override.
 const createGetCompetitionConflicts = (sport) => async (req, res) => {
   try {
     const { page, ...rest } = req.query || {};
@@ -65,6 +72,16 @@ const createGetCompetitionConflicts = (sport) => async (req, res) => {
       }
     }
 
+    const hasDateFilter = filters.from || filters.to || filters.start_date || filters.end_date;
+    if (!hasDateFilter) {
+      const from = new Date();
+      from.setDate(from.getDate() - CONFLICTS_DEFAULT_WINDOW_DAYS_BEFORE);
+      const to = new Date();
+      to.setDate(to.getDate() + CONFLICTS_DEFAULT_WINDOW_DAYS_AFTER);
+      filters.start_date = from.toISOString().slice(0, 10);
+      filters.end_date = to.toISOString().slice(0, 10);
+    }
+
     const result = await competitionService.findAll({ page: parsedPage, filters, sport });
     const enrichment = await oracleEnrichmentService.getEnrichmentForCompetitions(result.data);
 
@@ -72,7 +89,15 @@ const createGetCompetitionConflicts = (sport) => async (req, res) => {
       .map((row) => ({ ...row, oracle_enrichment: enrichment[row.id] || null }))
       .filter((row) => row.oracle_enrichment?.tier_conflict || row.oracle_enrichment?.prize_pool_conflict);
 
-    res.json({ data: conflicts, pagination: result.pagination });
+    // `scanned` describes the underlying competitions page this was
+    // filtered from, not a count of conflicts — conflating the two was the
+    // bug found testing this live (looked like "4894 conflicts" when it
+    // meant "4894 competitions, unscoped, across 98 pages").
+    res.json({
+      data: conflicts,
+      found_on_this_page: conflicts.length,
+      scanned: result.pagination,
+    });
   } catch (err) {
     console.error(`Error in getCompetitionConflicts (${sport}) controller:`, err);
     res.status(500).json({ error: 'Internal server error' });
