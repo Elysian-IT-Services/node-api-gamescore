@@ -4,10 +4,13 @@ import express from 'express';
 import { fetchFromApi } from '../controllers/apiController.js';
 import {
   getCompetitionsCS2,
+  getCompetitionConflictsCS2,
   getCompetitionByIdCS2,
   getCompetitionsLOL,
+  getCompetitionConflictsLOL,
   getCompetitionByIdLOL,
   getCompetitionsDOTA2,
+  getCompetitionConflictsDOTA2,
   getCompetitionByIdDOTA2
 } from '../controllers/competitionsController.js';
 
@@ -15,14 +18,17 @@ const router = express.Router();
 
 // CS2 routes
 router.get('/cs2', getCompetitionsCS2);
+router.get('/cs2/conflicts', getCompetitionConflictsCS2);
 router.get('/cs2/:id', getCompetitionByIdCS2);
 
 // LOL routes
 router.get('/lol', getCompetitionsLOL);
+router.get('/lol/conflicts', getCompetitionConflictsLOL);
 router.get('/lol/:id', getCompetitionByIdLOL);
 
 // DOTA2 routes
 router.get('/dota2', getCompetitionsDOTA2);
+router.get('/dota2/conflicts', getCompetitionConflictsDOTA2);
 router.get('/dota2/:id', getCompetitionByIdDOTA2);
 
 // Obtener participantes de una competición

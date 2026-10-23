@@ -77,16 +77,17 @@ function hasGenuineConflict(values) {
   return (max - min) / min > CONFLICT_RELATIVE_THRESHOLD;
 }
 
-// Source-priority rule for prize pool, per the Oracle 9 report's findings:
+// Source-priority rule for prize pool, per the Oracle 9 report's findings.
 // GSK's own figure is a player-share payout, not the tournament's full
-// announced pool, so it's the last resort here — prefer Liquipedia's own
+// announced pool — a different metric entirely, not just a lower-priority
+// source — so per Andy's feedback (869fa9vhm) it's never returned as
+// `prize_pool` at all, not even as a last resort: prefer Liquipedia's own
 // prize table total (it tends to reconcile per-placement payouts), then its
-// stated headline figure, then HLTV's.
-function resolvePrizePool({ gskValue, liquipediaTableTotal, liquipediaStated, hltvValue }) {
+// stated headline figure, then HLTV's; otherwise null.
+function resolvePrizePool({ liquipediaTableTotal, liquipediaStated, hltvValue }) {
   if (liquipediaTableTotal != null) return { value: liquipediaTableTotal, source: "liquipedia_table_total" };
   if (liquipediaStated != null) return { value: liquipediaStated, source: "liquipedia_stated" };
   if (hltvValue != null) return { value: hltvValue, source: "hltv" };
-  if (gskValue != null) return { value: gskValue, source: "gsk" };
   return { value: null, source: null };
 }
 
@@ -129,9 +130,11 @@ function buildPlacements(fields) {
 }
 
 /**
- * @param {Array<{id: number|string, prize_pool_usd?: number|null}>} competitions
+ * @param {Array<{id: number|string, tier?: string, prize_pool_usd?: number|null, end_date?: number, manual_override?: number}>} competitions
  *   Rows already fetched from this repo's own MySQL `competitions` table —
- *   `prize_pool_usd` is the GSK side of the prize-pool precedence rule above.
+ *   `tier`/`prize_pool_usd` are GSK's side of the precedence rules above,
+ *   `end_date` backs the staleness check, and `manual_override` (truthy)
+ *   makes GSK's own value win outright, skipping Oracle entirely.
  * @returns {Promise<Record<string, object>>} enrichment keyed by competition id (string)
  */
 export async function getEnrichmentForCompetitions(competitions) {
@@ -150,6 +153,11 @@ export async function getEnrichmentForCompetitions(competitions) {
         gsk_id: `in.(${ids.join(",")})`,
         select: "gsk_id,field,value_text,value_num,fetched_at",
       },
+      // Fails open (see catch below), but only if it fails fast — without
+      // this, a hung Oracle Supabase would hang the whole /competitions
+      // list response (up to 50 competitions batched per call) instead of
+      // falling back quickly. Flagged in review on 869fa9urd.
+      timeout: 8000,
     });
     rows = Array.isArray(response.data) ? response.data : [];
   } catch (err) {
@@ -172,14 +180,8 @@ export async function getEnrichmentForCompetitions(competitions) {
     const liquipediaTableTotal = parseMoneyLike(fields.prize_table_total_usd);
     const liquipediaStated = parseMoneyLike(fields.prize_pool_stated);
     const hltvValue = parseMoneyLike(fields.prize_pool_usd);
-    const gskPrizePool = comp.prize_pool_usd ?? null;
 
-    const prizePool = resolvePrizePool({
-      gskValue: gskPrizePool,
-      liquipediaTableTotal,
-      liquipediaStated,
-      hltvValue,
-    });
+    const prizePool = resolvePrizePool({ liquipediaTableTotal, liquipediaStated, hltvValue });
 
     // Tier precedence (ticket 869fa9vhm): Oracle/Liquipedia wins when it has
     // a value for this competition — it's the source that specializes in
@@ -188,20 +190,48 @@ export async function getEnrichmentForCompetitions(competitions) {
     // fresh on each response.
     const tierOracle = normalizeTier(fields.tier || fields.publisher_tier);
     const tierGsk = normalizeTier(comp.tier);
-    const tierResolved = tierOracle || tierGsk || null;
-    const tierResolvedSource = tierOracle ? "oracle" : tierGsk ? "gsk" : null;
+    let tierResolved = tierOracle || tierGsk || null;
+    let tierResolvedSource = tierOracle ? "oracle" : tierGsk ? "gsk" : null;
     const tierConflict = !!(tierOracle && tierGsk && tierOracle !== tierGsk);
+
+    let prizePoolValue = prizePool.value;
+    let prizePoolSource = prizePool.source;
+    // GSK's player-share figure is a different metric from the prize pool
+    // (see resolvePrizePool above), so it's deliberately left out of this
+    // conflict check too — comparing it against the real pool would just
+    // manufacture false conflicts, not catch real ones (869fa9vhm).
+    const prizePoolConflict = hasGenuineConflict([liquipediaTableTotal, liquipediaStated, hltvValue]);
+
+    // manual_override (869fa9urd): a value a human fixed by hand always
+    // wins over both Oracle and GSK — never flagged as conflicting with
+    // either, since a human already made the call.
+    if (comp.manual_override) {
+      tierResolved = tierGsk;
+      tierResolvedSource = "manual";
+      prizePoolValue = comp.prize_pool_usd ?? null;
+      prizePoolSource = "manual";
+    }
+
+    // Staleness (869fa9vhm): this fact set predates the event's own end —
+    // definitely hasn't been revisited since it finished. comp.end_date
+    // defaults to a far-future sentinel (see createTables.js) when GSK
+    // hasn't supplied a real one yet, which this treats as "not over", not
+    // stale.
+    const hasRealEndDate = Number(comp.end_date) && Number(comp.end_date) < 9999999999999;
+    const enrichmentStale =
+      hasRealEndDate && !!latestFetchedAt && new Date(latestFetchedAt).getTime() < Number(comp.end_date);
 
     result[comp.id] = {
       tier_oracle: tierOracle,
       tier_resolved: tierResolved,
       tier_resolved_source: tierResolvedSource,
-      tier_conflict: tierConflict,
+      tier_conflict: comp.manual_override ? false : tierConflict,
       format: buildFormatText(fields),
       placements: buildPlacements(fields),
-      prize_pool: prizePool.value,
-      prize_pool_source: prizePool.source,
-      prize_pool_conflict: hasGenuineConflict([gskPrizePool, liquipediaTableTotal, liquipediaStated, hltvValue]),
+      prize_pool: prizePoolValue,
+      prize_pool_source: prizePoolSource,
+      prize_pool_conflict: comp.manual_override ? false : prizePoolConflict,
+      enrichment_stale: enrichmentStale,
       links: {
         liquipedia: fields.page_url || null,
         official: fields.official_website || null,

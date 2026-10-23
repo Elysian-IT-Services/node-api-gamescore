@@ -46,6 +46,9 @@ export async function getPredictionsForFixtures(fixtures) {
         status: "eq.approved",
         select: "fixture_id,bracket_position,as_of,payload",
       },
+      // Same reasoning as oracleEnrichmentService.js's timeout — fails
+      // open, but only if it fails fast (869fa9urd review).
+      timeout: 8000,
     });
     rows = Array.isArray(response.data) ? response.data : [];
   } catch (err) {
