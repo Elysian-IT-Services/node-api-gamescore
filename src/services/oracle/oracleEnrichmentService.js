@@ -231,13 +231,26 @@ export async function getEnrichmentForCompetitions(competitions) {
     const enrichmentStale =
       hasRealEndDate && !!latestFetchedAt && new Date(latestFetchedAt).getTime() < Number(comp.end_date);
 
+    // placements_status (869fa9urd): an empty `placements` is ambiguous on
+    // its own — the event may simply not be over yet (normal), or it may
+    // have ended with Oracle never providing final standings (a real gap).
+    // Reuses the same end_date sentinel handling as enrichmentStale above.
+    const placements = buildPlacements(fields);
+    const hasEnded = hasRealEndDate && Date.now() > Number(comp.end_date);
+    const placementsStatus = Object.keys(placements).length > 0
+      ? "final"
+      : hasEnded
+        ? "unavailable"
+        : "pending";
+
     result[comp.id] = {
       tier_oracle: tierOracle,
       tier_resolved: tierResolved,
       tier_resolved_source: tierResolvedSource,
       tier_conflict: comp.manual_override ? false : tierConflict,
       format: buildFormatText(fields),
-      placements: buildPlacements(fields),
+      placements,
+      placements_status: placementsStatus,
       prize_pool: prizePoolValue,
       prize_pool_source: prizePoolSource,
       prize_pool_conflict: comp.manual_override ? false : prizePoolConflict,
