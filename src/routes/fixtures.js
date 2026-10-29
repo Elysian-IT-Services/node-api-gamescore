@@ -7,10 +7,14 @@ import {
     getFixturesLOL,
     getFixtureByIdLOL,
     getFixturesDOTA2,
-    getFixtureByIdDOTA2
+    getFixtureByIdDOTA2,
+    getPredictionsBulk
 } from '../controllers/fixture/fixtureController.js';
 
 const router = express.Router();
+
+// Bulk Oracle predictions lookup: /api/fixtures/predictions?ids=1,2,3
+router.get('/predictions', getPredictionsBulk);
 
 // CS2 routes (aceptan filtros por query: id, competition_id, status, start_time, end_time, scheduled_start_time)
 router.get('/cs2', getFixturesCS2);

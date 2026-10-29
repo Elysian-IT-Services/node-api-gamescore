@@ -41,6 +41,28 @@ export const listFixtures = async (req, res) => {
     }
 };
 
+// Bulk Oracle predictions lookup, decoupled from this API's own fixtures
+// table — HS's post-sync cron knows the external_ids it just synced (it
+// still gets the fixture data itself from GSK directly) and only needs the
+// predictions for those, in one round-trip instead of one per fixture.
+// Added after prod showed Supabase 429s from HS calling getFixture per
+// Tier S fixture with no batching (869fa9vzu follow-up).
+export const getPredictionsBulk = async (req, res) => {
+    try {
+        const idsParam = req.query.ids;
+        if (!idsParam) return res.status(400).json({ error: 'ids query param required' });
+
+        const ids = idsParam.split(',').map((s) => s.trim()).filter(Boolean);
+        if (!ids.length) return res.status(400).json({ error: 'ids query param required' });
+
+        const predictions = await getPredictionsForFixtures(ids.map((id) => ({ id })));
+        res.json({ predictions });
+    } catch (err) {
+        console.error('Error en getPredictionsBulk:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
 export const getFixture = async (req, res) => {
     try {
         const { id } = req.params;
